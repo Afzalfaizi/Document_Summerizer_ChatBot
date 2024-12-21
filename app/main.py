@@ -46,9 +46,10 @@ def extract_text_from_docx(file):
 
 @tool
 def document_uploader(file_path: str) -> str:
-    """Uploads and processes a document."""
+    """Uploads and processes a document with optimized embedding generation."""
     file_extension = file_path.split('.')[-1].lower()
     try:
+        # Extract text based on file type
         if file_extension == "txt":
             with open(file_path, "r", encoding="utf-8") as f:
                 content = f.read()
@@ -58,7 +59,19 @@ def document_uploader(file_path: str) -> str:
             content = extract_text_from_docx(file_path)
         else:
             return "Unsupported file format. Please upload a .txt, .pdf, or .docx file."
-        return f"Document uploaded successfully! Extracted content: {content[:500]}..."
+
+        # Split text into chunks
+        text_splitter = CharacterTextSplitter(chunk_size=500, chunk_overlap=50)
+        chunks = text_splitter.split_text(content)
+
+        # Generate embeddings in batches
+        documents = [Document(page_content=chunk) for chunk in chunks]
+        embeddings = embeddings_model.embed_documents([doc.page_content for doc in documents])
+
+        # Store embeddings in FAISS vector store
+        vector_store = FAISS.from_documents(documents, embeddings_model)
+
+        return "Document uploaded and processed successfully!"
     except Exception as e:
         return f"Error processing file: {str(e)}"
 
@@ -67,9 +80,9 @@ def document_retriever(query: str, documents: list) -> str:
     """Retrieves the most relevant chunks from documents."""
     text_splitter = CharacterTextSplitter(chunk_size=500, chunk_overlap=50)
     chunks = [Document(page_content=chunk) for doc in documents for chunk in text_splitter.split_text(doc)]
-    # Correctly access page_content for each chunk
+    # Generate embeddings for individual chunks
     embeddings = embeddings_model.embed_documents([chunk.page_content for chunk in chunks])
-    vector_store = FAISS.from_embeddings(embeddings, chunks)
+    vector_store = FAISS.from_documents(chunks, embeddings_model)
     retriever = vector_store.as_retriever(search_type="similarity", search_kwargs={"k": 3})
     results = retriever.get_relevant_documents(query)
     return "\n".join([res.page_content for res in results])
@@ -98,12 +111,19 @@ def memory_tool(thread_id: str, message: str) -> str:
 
 # Define the assistant node
 def assistant(state: MessagesState):
-    user_message = state["messages"][-1]  # Get the last message (HumanMessage object)
-    if isinstance(user_message, HumanMessage):
-        response = llm.invoke([user_message.content])  # Access content attribute
-        return {"messages": [AIMessage(content=response)]}
-    else:
-        raise ValueError("Invalid message type for assistant processing.")
+    try:
+        user_message = state["messages"][-1]  # Get the last message (HumanMessage object)
+        if isinstance(user_message, HumanMessage):
+            # Process the user message using the LLM
+            response = llm.invoke([user_message.content])  # Access content attribute
+            return {"messages": [AIMessage(content=response)]}
+        else:
+            # Log the invalid message type for debugging
+            print(f"Invalid message type: {type(user_message)}. Expected HumanMessage.")
+            raise ValueError("Invalid message type for assistant processing.")
+    except Exception as e:
+        return {"error": f"Error in assistant node: {str(e)}"}
+
 
 # Define the document summarizer node
 def summarize_document(state: MessagesState):
@@ -114,7 +134,7 @@ def summarize_document(state: MessagesState):
         chunks = text_splitter.split_text(doc_text)
         documents = [Document(page_content=chunk) for chunk in chunks]
         embeddings = embeddings_model.embed_documents([doc.page_content for doc in documents])
-        vector_store = FAISS.from_documents(embeddings, documents)
+        vector_store = FAISS.from_documents(documents, embeddings_model)
         retriever = vector_store.as_retriever(search_type="similarity", search_kwargs={"k": 3})
         qa_chain = RetrievalQA.from_chain_type(llm, retriever=retriever)
         summary = qa_chain.run("Summarize the document.")
