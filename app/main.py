@@ -24,11 +24,11 @@ load_dotenv()
 llm = GoogleGenerativeAI(model="gemini-1.5-flash", google_api_key=os.getenv("GOOGLE_API_KEY"))
 embeddings_model = GoogleGenerativeAIEmbeddings(model="models/embedding-001", google_api_key=os.getenv("GOOGLE_API_KEY"))
 
-# Memory for conversation context
+# Initialize memory store and checkpointer
 memory_store = {}
 checkpointer = MemorySaver()
 
-# Define message state
+# Define message state using TypedDict for type hinting
 class MessagesState(TypedDict):
     messages: Annotated[list, add_messages]
 
@@ -36,18 +36,21 @@ class MessagesState(TypedDict):
 
 def extract_text_from_pdf(file):
     """Extract text from PDF file."""
+    # Open the PDF file and extract text from each page
     with open_pdf(file) as pdf:
         text = ''.join([page.extract_text() for page in pdf.pages])
     return text
 
 def extract_text_from_docx(file):
     """Extract text from DOCX file."""
+    # Open the DOCX file and extract text from each paragraph
     doc = DocxDocument(file)
     return "\n".join([para.text for para in doc.paragraphs])
 
 @tool
 def document_uploader(file_path: str) -> str:
     """Uploads and processes a document with optimized embedding generation."""
+    # Determine the file extension to handle different file types
     file_extension = file_path.split('.')[-1].lower()
     try:
         # Extract text based on file type
