@@ -1,4 +1,4 @@
-# Document Summerizer ChatBot
+from fastapi import FastAPI, File, UploadFile, Query
 from typing_extensions import TypedDict
 from typing import Annotated
 from langgraph.graph import StateGraph, START, END
@@ -11,7 +11,6 @@ from langchain.chains import RetrievalQA
 from langchain.schema import HumanMessage, AIMessage
 from langchain.docstore.document import Document
 from langchain.tools import tool  # Added missing import
-from fastapi import FastAPI, File, UploadFile, Query
 from pdfplumber import open as open_pdf
 from docx import Document as DocxDocument
 from dotenv import load_dotenv
@@ -75,6 +74,9 @@ def document_uploader(file_path: str) -> str:
         # Store embeddings in FAISS vector store
         vector_store = FAISS.from_documents(documents, embeddings_model)
 
+        # Store the document content in memory_store
+        memory_store["uploaded_document"] = content
+
         return "Document uploaded and processed successfully!"
     except Exception as e:
         return f"Error processing file: {str(e)}"
@@ -128,7 +130,6 @@ def assistant(state: MessagesState):
     except Exception as e:
         return {"error": f"Error in assistant node: {str(e)}"}
 
-
 # Define the document summarizer node
 def summarize_document(state: MessagesState):
     doc_message = state["messages"][0]  # Get the first message (HumanMessage object)
@@ -175,7 +176,15 @@ async def upload_document(file: UploadFile = File(...)):
             text = extract_text_from_docx(file.file)
         else:
             return {"error": "Unsupported file format. Please upload a .txt, .pdf, or .docx file."}
-        return {"message": "Document uploaded successfully!", "content": text}
+        
+        # Store the document content in memory_store
+        memory_store["uploaded_document"] = text
+        
+        # Summarize the document and store the summary
+        summary = summarizer(text)
+        memory_store["document_summary"] = summary
+        
+        return {"message": "Document uploaded and summarized successfully!", "summary": summary}
     except Exception as e:
         return {"error": str(e)}
 
@@ -185,8 +194,41 @@ def get_content(query: str, thread_id: str = Query(...)):
     Handles user queries with dynamic thread ID for memory context.
     """
     try:
-        config = {"configurable": {"thread_id": thread_id}}
-        result = graph.invoke({"messages": [HumanMessage(content=query)]}, config)
-        return result
+        # Retrieve the document content from memory_store
+        if "uploaded_document" not in memory_store:
+            return {"error": "No document uploaded. Please upload a document first."}
+        
+        document_content = memory_store["uploaded_document"]
+        text_splitter = CharacterTextSplitter(chunk_size=500, chunk_overlap=50)
+        chunks = text_splitter.split_text(document_content)
+        documents = [Document(page_content=chunk) for chunk in chunks]
+        embeddings = embeddings_model.embed_documents([doc.page_content for doc in documents])
+        vector_store = FAISS.from_documents(documents, embeddings_model)
+        retriever = vector_store.as_retriever(search_type="similarity", search_kwargs={"k": 3})
+        
+        # Answer the query using the document content
+        qa_chain = RetrievalQA.from_chain_type(llm, retriever=retriever)
+        answer = qa_chain.run(query)
+        
+        # Store the question and answer in memory_store
+        if thread_id not in memory_store:
+            memory_store[thread_id] = []
+        memory_store[thread_id].append({"question": query, "answer": answer})
+        
+        return {"answer": answer}
     except Exception as e:
-        return {"output": str(e)}
+        return {"error": str(e)}
+
+@app.get("/history/{thread_id}")
+def get_history(thread_id: str):
+    """
+    Retrieves the history of questions and answers for a given thread ID.
+    """
+    try:
+        if thread_id not in memory_store:
+            return {"error": "No history found for the given thread ID."}
+        
+        history = memory_store[thread_id]
+        return {"history": history}
+    except Exception as e:
+        return {"error": str(e)}
