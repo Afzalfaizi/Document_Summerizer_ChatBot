@@ -16,14 +16,14 @@ from docx import Document as DocxDocument
 from dotenv import load_dotenv
 import os
 
-# Load environment variables
+# Load environment variables from a .env file
 load_dotenv()
 
-# Initialize LLM and Embedding Models
+# Initialize LLM and Embedding Models with API keys from environment variables
 llm = GoogleGenerativeAI(model="gemini-1.5-flash", google_api_key=os.getenv("GOOGLE_API_KEY"))
 embeddings_model = GoogleGenerativeAIEmbeddings(model="models/embedding-001", google_api_key=os.getenv("GOOGLE_API_KEY"))
 
-# Initialize memory store and checkpointer
+# Initialize memory store and checkpointer for state management
 memory_store = {}
 checkpointer = MemorySaver()
 
@@ -63,11 +63,11 @@ def document_uploader(file_path: str) -> str:
         else:
             return "Unsupported file format. Please upload a .txt, .pdf, or .docx file."
 
-        # Split text into chunks
+        # Split text into chunks for embedding generation
         text_splitter = CharacterTextSplitter(chunk_size=500, chunk_overlap=50)
         chunks = text_splitter.split_text(content)
 
-        # Generate embeddings in batches
+        # Generate embeddings for the text chunks
         documents = [Document(page_content=chunk) for chunk in chunks]
         embeddings = embeddings_model.embed_documents([doc.page_content for doc in documents])
 
@@ -84,6 +84,7 @@ def document_uploader(file_path: str) -> str:
 @tool
 def document_retriever(query: str, documents: list) -> str:
     """Retrieves the most relevant chunks from documents."""
+    # Split documents into chunks for retrieval
     text_splitter = CharacterTextSplitter(chunk_size=500, chunk_overlap=50)
     chunks = [Document(page_content=chunk) for doc in documents for chunk in text_splitter.split_text(doc)]
     # Generate embeddings for individual chunks
@@ -147,7 +148,7 @@ def summarize_document(state: MessagesState):
     else:
         raise ValueError("Invalid message type for document summarization.")
 
-# Build the graph
+# Build the graph for state management
 builder = StateGraph(MessagesState)
 builder.add_node("assistant", assistant)
 builder.add_node("summarize", summarize_document)
@@ -155,7 +156,7 @@ builder.add_edge(START, "summarize")
 builder.add_edge("summarize", "assistant")
 builder.add_edge("assistant", END)
 
-# Compile graph with memory
+# Compile graph with memory checkpointer
 graph = builder.compile(checkpointer=checkpointer)
 
 # Create FastAPI app
@@ -163,6 +164,9 @@ app = FastAPI()
 
 @app.post("/upload/")
 async def upload_document(file: UploadFile = File(...)):
+    """
+    Endpoint to upload a document, process it, and store its content and summary.
+    """
     try:
         # Check file extension
         file_extension = os.path.splitext(file.filename)[-1].lower()
@@ -210,7 +214,7 @@ def get_content(query: str, thread_id: str = Query(...)):
         qa_chain = RetrievalQA.from_chain_type(llm, retriever=retriever)
         answer = qa_chain.run(query)
         
-        # Store the question and answer in memory_store
+        # Store the question and answer in memory_store under the given thread_id
         if thread_id not in memory_store:
             memory_store[thread_id] = []
         memory_store[thread_id].append({"question": query, "answer": answer})
@@ -225,9 +229,11 @@ def get_history(thread_id: str):
     Retrieves the history of questions and answers for a given thread ID.
     """
     try:
+        # Check if the thread_id exists in memory_store
         if thread_id not in memory_store:
             return {"error": "No history found for the given thread ID."}
         
+        # Retrieve the history for the given thread_id
         history = memory_store[thread_id]
         return {"history": history}
     except Exception as e:
