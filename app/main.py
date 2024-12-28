@@ -200,7 +200,7 @@ def get_content(query: str, thread_id: str = Query(...)):
     try:
         # Retrieve the document content from memory_store
         if "uploaded_document" not in memory_store:
-            return {"error": "No document uploaded. Please upload a document first."}
+            return {"error": "No document uploaded. Please upload a document."}
         
         document_content = memory_store["uploaded_document"]
         text_splitter = CharacterTextSplitter(chunk_size=500, chunk_overlap=50)
